@@ -2,12 +2,11 @@
 #define __UFPGA_H_
 
 #include <linux/cdev.h>
+#include <linux/list.h>
 #include <linux/pci.h>
 #include <linux/types.h>
 
 #define NAME "ufpga" // Driver name used for *everything*
-
-#define MAX_DEVICES 1 // Maximum number of attached devices
 
 // PCIe Config
 #define BAR 0
@@ -15,25 +14,24 @@
 #define FPGA_DEVICE_ID 0x7021 // TODO: Stop using this random device ID
 
 struct ufpga_dev {
-    bool active; // HACK: We shouldn't waste space with useless structs.
+    void __iomem *mmio; // IO region for this device
 
-    void __iomem *mmio;
+    dev_t devno; // Device numbers for this device
 
-    dev_t dev;
+    struct device *device; // Device file
+    struct pci_dev *pdev; // PCIe device
+    struct cdev cdev; // Character device
 
-    struct device *device;
-    struct pci_dev *pdev;
-    struct cdev cdev;
+    struct list_head devs;
 };
 
 struct ufpga_driver {
     unsigned int major; // Character device major number
+    unsigned int count; // Count of attached devices
 
-    unsigned int next_dev;
+    struct class *class; // Device class
 
-    struct ufpga_dev *devs;
-
-    struct class *class;
+    struct list_head devs; // List of uFPGA devices
 };
 
 #endif // __UFPGA_H_

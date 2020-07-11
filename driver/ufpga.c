@@ -12,7 +12,12 @@
 
 #include "ufpga.h"
 
-static struct ufpga_driver _driver;
+static struct ufpga_driver _driver = {
+.major = 0,
+.count = 0,
+.class = 0,
+.devs = LIST_HEAD_INIT(_driver.devs)
+};
 
 static int ufpga_open(struct inode *inode, struct file *filp)
 {
@@ -92,76 +97,122 @@ static struct file_operations ufpga_fops = {
     .write   = ufpga_write,
 };
 
-// FIXME: This may have concurrency issues if (unlikely) two devices are
-// probed simultaneously.
-static void ufpga_setup_cdev(struct ufpga_dev *dev, unsigned int index)
+static inline struct ufpga_dev* alloc_udev(void)
+{
+   struct ufpga_dev *udev;
+
+   udev = kmalloc(sizeof(struct ufpga_dev), GFP_KERNEL);
+
+   // TODO: Do we really need to do this?
+   memset(udev, 0, sizeof(struct ufpga_dev));
+
+   // Set up list pointer
+   INIT_LIST_HEAD(&(udev->devs));
+
+   return udev;
+}
+
+// FIXME: Potential concurrency issue here
+static inline int get_devno(dev_t *devno)
+{
+    int result;
+   
+    if (!_driver.major) {
+        // We don't have a major number; need to alloc one
+        result = alloc_chrdev_region(devno, 0, 1, NAME);
+        _driver.major = MAJOR(*devno);
+    }
+
+    else {
+        // Use existing major number
+        *devno = MKDEV(_driver.major, _driver.count);
+        result = register_chrdev_region(*devno, 1, NAME);
+    }
+
+    if (!(result < 0)) {
+        _driver.count++; // Increment number of attached devices
+    }
+       
+    return result;
+}
+
+static inline int alloc_cdev(struct ufpga_dev *udev)
 {
     int err;
-    dev_t devno = MKDEV(_driver.major, index);
-    struct device *device;
+   
+    cdev_init(&udev->cdev, &ufpga_fops);
+    udev->cdev.owner = THIS_MODULE;
+    udev->cdev.ops = &ufpga_fops;
 
-    cdev_init(&dev->cdev, &ufpga_fops);
-    dev->cdev.owner = THIS_MODULE;
-    dev->cdev.ops = &ufpga_fops;
-
-    err = cdev_add(&dev->cdev, devno, 1);
+    err = cdev_add(&udev->cdev, udev->devno, 1);
     if (err)
     {
         // FIXME: If this fails we need to handle deallocation of the cdev properly
-        printk(KERN_NOTICE NAME "Error %d adding cdev %d", err, index);
-        return;
+        //printk(KERN_NOTICE NAME "Error %d adding cdev %d", err, index);
+        return -1;
     }
 
-    device = device_create(_driver.class, NULL, devno, NULL, "ufpga0"); // FIXME: hardcoded device name
-    if (!device) {
+    udev->device = device_create(_driver.class, NULL, udev->devno, NULL, "ufpga0"); // FIXME: hardcoded device name
+    if (!udev->device) {
         printk(KERN_NOTICE "Error creating device");
-        return;
-    }
-    dev->device = device;
-    dev->dev = devno;
-    dev->active = true;
-}
-
-static void ufpga_destroy_dev(struct ufpga_dev *dev)
-{
-    if (!dev->active) {
-        return;
+        return -1;
     }
 
-    device_destroy(_driver.class, dev->dev);
-    cdev_del(&(dev->cdev));
-
-    pci_release_region(dev->pdev, BAR);
-    pci_disable_device(dev->pdev);
-
-    dev->active = false;
+    return 0;
 }
 
 static int pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
-    unsigned int index = _driver.next_dev;
-    struct ufpga_dev *udev = _driver.devs + index;
+    // Allocate uFPGA device
+    struct ufpga_dev *udev = alloc_udev();
 
+    // Link PCIe dev and udev
     pci_set_drvdata(dev, udev);
     udev->pdev = dev;
 
     if (pci_enable_device(dev) < 0) {
-        dev_err(&(dev->dev), "pci_enable_device\n");
+        dev_err(&dev->dev, "pci_enable_device\n");
         goto error;
     }
 
     if (pci_request_region(dev, BAR, NAME "_BAR0")) {
-        dev_err(&(dev->dev), "pci_request_region\n");
+        dev_err(&dev->dev, "pci_request_region\n");
         goto error;
     }
 
     udev->mmio = pci_iomap(dev, BAR, pci_resource_len(dev, BAR));
-    ufpga_setup_cdev(udev, index);
+
+    // Get numbers for the new device
+    // FIXME: Error handling on this call
+    get_devno(&udev->devno);
+
+    // Allocate cdev
+    // FIXME: Error handling on this call
+    alloc_cdev(udev);
+
+    list_add(&udev->devs, &_driver.devs);
 
     return 0;
 
 error:
     return 1;
+}
+
+// FIXME: Potential concurrency issue here? Interaction with probe?
+static void ufpga_destroy_dev(struct ufpga_dev *udev)
+{
+    list_del(&udev->devs);
+    _driver.count--;
+
+    device_destroy(_driver.class, udev->devno);
+
+    cdev_del(&udev->cdev);
+    unregister_chrdev_region(udev->devno, 1);
+
+    pci_release_region(udev->pdev, BAR);
+    pci_disable_device(udev->pdev);
+
+    kfree(udev);
 }
 
 static void pci_remove(struct pci_dev *dev)
@@ -184,8 +235,7 @@ static struct pci_driver pci_driver = {
 static int ufpga_init(void)
 {
     int result;
-    dev_t dev;
-   
+
     // Create a device class
     _driver.class = class_create(THIS_MODULE, NAME);
     if (!_driver.class){
@@ -195,35 +245,14 @@ static int ufpga_init(void)
         goto err_return;
     }
 
-    // Allocate numbers
-    result = alloc_chrdev_region(&dev, 0, MAX_DEVICES, NAME);
-    if (result < 0) {
-        printk(KERN_WARNING NAME ": can't allocate device numbers");
-        goto err_deallocate_class;
-    }
-    _driver.major = MAJOR(dev);
-
-    // Allocate devices
-    _driver.devs = kmalloc(MAX_DEVICES * sizeof(struct ufpga_dev), GFP_KERNEL);
-    if (!_driver.devs) {
-        result = -ENOMEM;
-        goto err_deallocate_chrdev_region;  /* Make this more graceful */
-    }
-    memset(_driver.devs, 0, MAX_DEVICES * sizeof(struct ufpga_dev));
-    _driver.next_dev = 0;
-
     result = pci_register_driver(&pci_driver);
     if (result < 0) {
         printk(KERN_WARNING NAME ": can't register PCI driver");
-        goto err_deallocate_devices;
+        goto err_deallocate_class;
     }
 
     return 0;
 
-err_deallocate_devices:
-    kfree(_driver.devs);
-err_deallocate_chrdev_region:
-    unregister_chrdev_region(dev, MAX_DEVICES);
 err_deallocate_class:
     class_destroy(_driver.class);
 err_return:
@@ -232,16 +261,18 @@ err_return:
 
 static void ufpga_exit(void)
 {
-    int i;
+    struct ufpga_dev *udev = NULL ;
+    struct ufpga_dev *udev_temp = NULL ;
 
+    // NOTE: This *must* come first, otherwise we try to double free
     pci_unregister_driver(&pci_driver);
 
-    for (i = 0; i < MAX_DEVICES; i++) {
-        ufpga_destroy_dev(_driver.devs + i);
+    // Catch any remenants in case a device didn't remove.
+    list_for_each_entry_safe (udev, udev_temp, &_driver.devs, devs)
+    {
+        ufpga_destroy_dev(udev);
     }
 
-    kfree(_driver.devs);
-    unregister_chrdev_region(MKDEV(_driver.major, 0), MAX_DEVICES);
     class_destroy(_driver.class);
 }
 
