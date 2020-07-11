@@ -103,11 +103,13 @@ static inline struct ufpga_dev* alloc_udev(void)
 
    udev = kmalloc(sizeof(struct ufpga_dev), GFP_KERNEL);
 
-   // TODO: Do we really need to do this?
-   memset(udev, 0, sizeof(struct ufpga_dev));
+   if (udev) {
+       // TODO: Do we really need to do this?
+       memset(udev, 0, sizeof(struct ufpga_dev));
 
-   // Set up list pointer
-   INIT_LIST_HEAD(&(udev->devs));
+       // Set up list pointer
+       INIT_LIST_HEAD(&(udev->devs));
+   }
 
    return udev;
 }
@@ -136,66 +138,104 @@ static inline int get_devno(dev_t *devno)
     return result;
 }
 
-static inline int alloc_cdev(struct ufpga_dev *udev)
+// TODO: Error recovery is potentially dodgy here wrt. when cdev_del
+// should be used; after cdev_init, or only after cdev_add?
+static inline int init_cdev(struct ufpga_dev *udev)
 {
-    int err;
+    int result;
+   
+    if(get_devno(&udev->devno)) {
+        printk(KERN_ERR NAME ": failed to allocate device number\n");
+        result = -ENOMEM; // TODO: Is there a better error code?
+        goto err_return;
+    }
    
     cdev_init(&udev->cdev, &ufpga_fops);
     udev->cdev.owner = THIS_MODULE;
     udev->cdev.ops = &ufpga_fops;
 
-    err = cdev_add(&udev->cdev, udev->devno, 1);
-    if (err)
-    {
-        // FIXME: If this fails we need to handle deallocation of the cdev properly
-        //printk(KERN_NOTICE NAME "Error %d adding cdev %d", err, index);
-        return -1;
+    if(cdev_add(&udev->cdev, udev->devno, 1)) {
+        printk(KERN_ERR NAME ": failed to add character device\n");
+        result = -1;
+        goto err_delete_cdev;
     }
+
+    // NOTE: From this point onwards the character device is live; we can no longer
+    // handle errors safely and must continue.
+
+    printk(KERN_NOTICE NAME ": created character device %d:%d\n", MAJOR(udev->devno), MINOR(udev->devno));
 
     udev->device = device_create(_driver.class, NULL, udev->devno, NULL, "ufpga0"); // FIXME: hardcoded device name
     if (!udev->device) {
-        printk(KERN_NOTICE "Error creating device");
-        return -1;
+        printk(KERN_WARNING NAME ": failed to create device\n");
     }
 
     return 0;
+
+err_delete_cdev:
+    cdev_del(&udev->cdev);
+//err_deallocate_number:
+    unregister_chrdev_region(udev->devno, 1);
+err_return:
+    return result;
 }
 
 static int pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
-    // Allocate uFPGA device
-    struct ufpga_dev *udev = alloc_udev();
+    int result;
+    struct ufpga_dev *udev;
 
-    // Link PCIe dev and udev
+    dev_info(&dev->dev, "attaching device\n");
+
+    // Allocate uFPGA device
+    udev = alloc_udev();
+    if (!udev) {
+        printk(KERN_ERR "Error allocating uFPGA device\n");
+        result = -ENOMEM;
+        goto err;
+    }
+
+    // Link PCIe dev and uFPGA device
     pci_set_drvdata(dev, udev);
     udev->pdev = dev;
 
-    if (pci_enable_device(dev) < 0) {
-        dev_err(&dev->dev, "pci_enable_device\n");
-        goto error;
+    result = pci_enable_device(dev);
+    if (result) {
+        dev_err(&dev->dev, "failed to enable device\n");
+        goto err_free;
     }
 
-    if (pci_request_region(dev, BAR, NAME "_BAR0")) {
-        dev_err(&dev->dev, "pci_request_region\n");
-        goto error;
+    result = pci_request_region(dev, BAR, NAME "_BAR0");
+    if (result) {
+        dev_err(&dev->dev, "failed to request BAR\n");
+        goto err_disable;
     }
 
     udev->mmio = pci_iomap(dev, BAR, pci_resource_len(dev, BAR));
 
-    // Get numbers for the new device
-    // FIXME: Error handling on this call
-    get_devno(&udev->devno);
-
     // Allocate cdev
-    // FIXME: Error handling on this call
-    alloc_cdev(udev);
+    result = init_cdev(udev);
+    if(result) {
+        dev_err(&dev->dev, "failed to initialise character device\n");
+        goto err_unlock_region;
+    }
+
+    // NOTE: From this point onwards the character device is live; we can no longer
+    // handle errors safely and must continue.
 
     list_add(&udev->devs, &_driver.devs);
 
     return 0;
 
-error:
-    return 1;
+err_unlock_region:
+    pci_release_region(udev->pdev, BAR);
+err_disable:
+    pci_disable_device(udev->pdev);
+err_free:
+    printk(KERN_NOTICE "Deallocating uFPGA device and aborting\n");
+    kfree(udev);
+err:
+    return result;
 }
 
 // FIXME: Potential concurrency issue here? Interaction with probe?
@@ -204,6 +244,7 @@ static void ufpga_destroy_dev(struct ufpga_dev *udev)
     list_del(&udev->devs);
     _driver.count--;
 
+    // This is always safe; even if creation failed
     device_destroy(_driver.class, udev->devno);
 
     cdev_del(&udev->cdev);
@@ -236,10 +277,12 @@ static int ufpga_init(void)
 {
     int result;
 
+    printk(KERN_INFO NAME ": loading module...\n");
+
     // Create a device class
     _driver.class = class_create(THIS_MODULE, NAME);
     if (!_driver.class){
-        printk(KERN_WARNING NAME ": can't create class");
+        printk(KERN_ERR NAME ": can't create class\n");
 
         result = -ENOMEM; // TODO: Is there a better error code?
         goto err_return;
@@ -247,15 +290,20 @@ static int ufpga_init(void)
 
     result = pci_register_driver(&pci_driver);
     if (result < 0) {
-        printk(KERN_WARNING NAME ": can't register PCI driver");
+        printk(KERN_ERR NAME ": can't register PCI driver\n");
         goto err_deallocate_class;
     }
+
+    // NOTE: From this point onwards the PCI driver is live
+
+    printk(KERN_INFO NAME ": module loaded\n");
 
     return 0;
 
 err_deallocate_class:
     class_destroy(_driver.class);
 err_return:
+    printk(KERN_NOTICE NAME ": aborting module load with result: %d\n", result);
     return result;
 }
 
@@ -268,12 +316,13 @@ static void ufpga_exit(void)
     pci_unregister_driver(&pci_driver);
 
     // Catch any remenants in case a device didn't remove.
-    list_for_each_entry_safe (udev, udev_temp, &_driver.devs, devs)
-    {
+    list_for_each_entry_safe (udev, udev_temp, &_driver.devs, devs) {
         ufpga_destroy_dev(udev);
     }
 
     class_destroy(_driver.class);
+
+    printk(KERN_INFO NAME ": module unloaded\n");
 }
 
 module_init(ufpga_init);
