@@ -1,0 +1,12 @@
+.DS_Store
+.idea
+*.log
+tmp/
+work/
+bin/
+
+# Build Artifacts
+*.ko*
+*.o*
+*.mod*
+/driver/Module.symvers
