@@ -140,7 +140,7 @@ static inline int get_devno(dev_t *devno)
 
 // TODO: Error recovery is potentially dodgy here wrt. when cdev_del
 // should be used; after cdev_init, or only after cdev_add?
-static inline int init_cdev(struct ufpga_dev *udev)
+static inline int init_cdev(struct ufpga_dev *udev, struct device *parent)
 {
     int result;
    
@@ -165,7 +165,7 @@ static inline int init_cdev(struct ufpga_dev *udev)
 
     printk(KERN_NOTICE NAME ": created character device %d:%d\n", MAJOR(udev->devno), MINOR(udev->devno));
 
-    udev->device = device_create(_driver.class, NULL, udev->devno, NULL, "ufpga0"); // FIXME: hardcoded device name
+    udev->device = device_create(_driver.class, parent, udev->devno, NULL, "ufpga0"); // FIXME: hardcoded device name
     if (!udev->device) {
         printk(KERN_WARNING NAME ": failed to create device\n");
     }
@@ -214,7 +214,7 @@ static int pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
     udev->mmio = pci_iomap(dev, BAR, pci_resource_len(dev, BAR));
 
     // Allocate cdev
-    result = init_cdev(udev);
+    result = init_cdev(udev, &dev->dev);
     if(result) {
         dev_err(&dev->dev, "failed to initialise character device\n");
         goto err_unlock_region;
