@@ -165,7 +165,7 @@ static inline int init_cdev(struct ufpga_dev *udev, struct device *parent)
 
     printk(KERN_NOTICE NAME ": created character device %d:%d\n", MAJOR(udev->devno), MINOR(udev->devno));
 
-    udev->device = device_create(_driver.class, parent, udev->devno, NULL, "ufpga0"); // FIXME: hardcoded device name
+    udev->device = device_create(_driver.class, parent, udev->devno, NULL, "ufpga%d", MINOR(udev->devno));
     if (!udev->device) {
         printk(KERN_WARNING NAME ": failed to create device\n");
     }
