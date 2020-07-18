@@ -1,6 +1,7 @@
 use regex::Regex;
+use std::{error::Error, fmt::Display, str::FromStr};
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Location {
     pub domain: u8,
     pub bus: u8,
@@ -8,24 +9,52 @@ pub struct Location {
     pub function: u8,
 }
 
-impl Location {
-    pub fn to_string(&self) -> String {
-        format!(
+impl Display for Location {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
             "{:04}:{:02}:{:02}.{}",
             self.domain, self.bus, self.device, self.function
         )
     }
+}
 
-    pub fn parse_loc(loc: &str) -> Option<Location> {
-        let re = Regex::new(r"(\d{4}):(\d{2}):(\d{2}).(\d{1})").ok()?;
-        let cap = re.captures(loc)?;
+impl FromStr for Location {
+    type Err = LocationParseError;
+    fn from_str(loc: &str) -> Result<Self, Self::Err> {
+        let re =
+            Regex::new(r"(\d{4}):(\d{2}):(\d{2}).(\d{1})").map_err(|_| LocationParseError(()))?;
+        let cap = re.captures(loc).ok_or_else(|| LocationParseError(()))?;
 
-        let domain = cap.get(1)?.as_str().parse::<u8>().ok()?;
-        let bus = cap.get(2)?.as_str().parse::<u8>().ok()?;
-        let device = cap.get(3)?.as_str().parse::<u8>().ok()?;
-        let function = cap.get(4)?.as_str().parse::<u8>().ok()?;
+        let domain = cap
+            .get(1)
+            .ok_or_else(|| LocationParseError(()))?
+            .as_str()
+            .parse::<u8>()
+            .map_err(|_| LocationParseError(()))?;
 
-        Some(Location {
+        let bus = cap
+            .get(2)
+            .ok_or_else(|| LocationParseError(()))?
+            .as_str()
+            .parse::<u8>()
+            .map_err(|_| LocationParseError(()))?;
+
+        let device = cap
+            .get(3)
+            .ok_or_else(|| LocationParseError(()))?
+            .as_str()
+            .parse::<u8>()
+            .map_err(|_| LocationParseError(()))?;
+
+        let function = cap
+            .get(4)
+            .ok_or_else(|| LocationParseError(()))?
+            .as_str()
+            .parse::<u8>()
+            .map_err(|_| LocationParseError(()))?;
+
+        Ok(Location {
             domain,
             bus,
             device,
@@ -33,3 +62,14 @@ impl Location {
         })
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocationParseError(());
+
+impl Display for LocationParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("invalid PCI location string")
+    }
+}
+
+impl Error for LocationParseError {}
