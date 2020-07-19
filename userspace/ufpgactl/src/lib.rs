@@ -42,27 +42,13 @@ fn list(verbose: bool) {
             println!("Attached uFPGA Devices");
             println!("======================");
             for ufpga in ufpgas {
-                println!("{}", ufpga_status(ufpga, verbose));
+                println!("{}", ufpga.status(verbose));
             }
         }
         Err(e) => {
             eprintln!("Failed to enumerate uFPGA devices: {}", e);
             process::exit(1);
         }
-    }
-}
-
-pub fn ufpga_status(ufpga: ufpga::UFPGA, verbose: bool) -> String {
-    if verbose {
-        match (ufpga.version(), ufpga.xadc_status()) {
-            (Ok(version), Ok(status)) => format!(
-                "uFPGA device @ {} on /dev/{}\n    ID: {}\n    Status: {}",
-                ufpga.location, ufpga.device.mount, version, status
-            ),
-            _ => ufpga.to_string(),
-        }
-    } else {
-        ufpga.to_string()
     }
 }
 
@@ -73,14 +59,8 @@ pub fn enumerate_devices(class: &str) -> Result<Vec<ufpga::UFPGA>, SysfsLookupEr
     for entry in sysfs::read_class(class)? {
         if let Ok(entry) = entry {
             let path = entry.path();
-
-            if let Ok(loc) = sysfs::read_dev_location(&path) {
-                if let Ok(mount) = sysfs::read_dev_name(&path) {
-                    out.push(ufpga::UFPGA {
-                        device: mount,
-                        location: loc,
-                    });
-                }
+            if let Ok(device) = sysfs::Device::read_device(&path) {
+                out.push(ufpga::UFPGA { device })
             }
         }
     }

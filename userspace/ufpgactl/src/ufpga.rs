@@ -5,7 +5,6 @@ use std::{
     path::PathBuf,
 };
 
-use crate::pci::Location;
 use crate::sysfs::Device;
 
 #[derive(Default, Copy, Clone, PartialEq)]
@@ -35,10 +34,37 @@ impl Display for XADCStatus {
 #[derive(Clone, PartialEq, Eq)]
 pub struct UFPGA {
     pub device: Device,
-    pub location: Location,
 }
 
 impl UFPGA {
+    pub fn status(&self, verbose: bool) -> String {
+        if verbose {
+            match (
+                self.device.mount.to_str(),
+                self.version(),
+                self.xadc_status(),
+            ) {
+                (Some(mount), Ok(version), Ok(status)) => format!(
+                    "uFPGA device ({}) @ {} on {}\n    ID: {}\n    Status: {}",
+                    self.device.name, self.device.location, mount, version, status
+                ),
+                _ => format!("uFPGA device @ {}", self.device.location),
+            }
+        } else {
+            if let Some(mount) = self.device.mount.to_str() {
+                format!(
+                    "uFPGA device ({}) @ {} on {}",
+                    self.device.name, self.device.location, mount
+                )
+            } else {
+                format!(
+                    "uFPGA device ({}) @ {}",
+                    self.device.name, self.device.location
+                )
+            }
+        }
+    }
+
     pub fn version(&self) -> Result<String> {
         let mut device_path = PathBuf::from("/dev");
         device_path.push(&self.device.mount);
@@ -121,15 +147,5 @@ impl UFPGA {
 
     fn convert_volt(raw: u32) -> f64 {
         (raw as f64) * 3.0 / 65536.0
-    }
-}
-
-impl Display for UFPGA {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "uFPGA device @ {} on /dev/{}",
-            self.location, self.device.mount
-        )
     }
 }
