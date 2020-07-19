@@ -75,7 +75,7 @@ pub fn enumerate_devices(class: &str) -> Result<Vec<ufpga::UFPGA>, SysfsLookupEr
             let path = entry.path();
 
             if let Ok(loc) = sysfs::read_dev_location(&path) {
-                if let Ok(mount) = sysfs::read_dev_mount(&path) {
+                if let Ok(mount) = sysfs::read_dev_name(&path) {
                     out.push(ufpga::UFPGA {
                         device: mount,
                         location: loc,

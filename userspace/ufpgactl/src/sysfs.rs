@@ -1,7 +1,8 @@
 use std::{
     error::Error,
     fmt::Display,
-    fs::{read_dir, ReadDir},
+    fs::{read_dir, File, ReadDir},
+    io::Read,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -45,6 +46,23 @@ pub fn read_dev_location(dev: &Path) -> Result<Location, SysfsLookupError> {
 }
 
 pub fn read_dev_mount(dev: &Path) -> Result<Device, SysfsLookupError> {
+    // Unfortunately we can't just look at the device name, because udev
+    // (or a user) might have changed the device node; instead we read
+    // the device number and then scan /dev to find the first node
+    // associated with this. This is OK since the driver treats all
+    // nodes with the same device number the same.
+    panic!("not implemented");
+    let mut path = PathBuf::from(dev);
+    path.push("dev");
+
+    let mut file = File::open(path).map_err(|_| SysfsLookupError(()))?;
+    let mut dev_t = String::new();
+
+    file.read_to_string(&mut dev_t)
+        .map_err(|_| SysfsLookupError(()))?;
+}
+
+pub fn read_dev_name(dev: &Path) -> Result<Device, SysfsLookupError> {
     let link = dev.read_link().map_err(|_| SysfsLookupError(()))?;
     let loc = link
         .file_name()
