@@ -8,4 +8,4 @@ fn main() {
 }
 
 #[cfg(not(target_os = "linux"))]
-compile_error!("ufpgactl only supports Linux");
+compile_error!("ufpgactl assumes a Linux userspace with sysfs+devtmpfs and will almost definitely not work on other platforms");
